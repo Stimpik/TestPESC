@@ -1,4 +1,4 @@
-import redis.asyncio as redis
+import redis
 from .config import settings
 
 _redis_client = None
@@ -12,3 +12,6 @@ def get_redis_client():
             decode_responses=True,
         )
     return _redis_client
+
+
+redis_client = get_redis_client()

@@ -1,9 +1,7 @@
-"""В рамках тестового для простоты использую in_memory БД"""
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
-DATABASE_URL = "sqlite:///:memory:"
+DATABASE_URL = "sqlite:///./test.db"
 
 engine = create_engine(DATABASE_URL)
 
@@ -13,3 +11,4 @@ SessionLocal = sessionmaker(bind=engine)
 class Base(DeclarativeBase):
     pass
 
+Base.metadata.create_all(bind=engine)
