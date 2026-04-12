@@ -12,8 +12,10 @@ idna==3.11
 passlib==1.7.4
 pycparser==3.0
 pydantic==2.12.5
+pydantic-settings==2.13.1
 pydantic_core==2.41.5
 PyJWT==2.12.1
+python-dotenv==1.2.2
 redis==7.4.0
 starlette==1.0.0
 typing-inspection==0.4.2
