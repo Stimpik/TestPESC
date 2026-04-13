@@ -151,8 +151,3 @@ def refresh_token(body: RefreshTokenRequest, db: Session = Depends(get_db)):
         "token_type": "bearer"
     }
 
-
-@router.get('/')
-def users(db: Session = Depends(get_db)):
-    users = db.scalars(select(UserModel)).all()
-    return users
