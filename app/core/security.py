@@ -72,13 +72,16 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         if not user_id or not role or not jti:
             raise credentials_exception
 
-        user = db.scalar(select(UserModel).where(UserModel.id == int(user_id)))
-        if not user or user.role != role:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail='The user has been deleted or the role has changed')
-
         if redis_client.exists(f"blacklist:{jti}"):
             raise HTTPException(status_code=401, detail="Token revoked")
+
+        # user = db.get(UserModel, int(user_id))
+        # if not user or user.role != role:
+        #     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+        #                         detail='The user has been deleted or the role has changed') #не совсем понятно,
+        #                                 доверять ли токену или проверять в базе?
+
+
 
         return {"user_id": int(user_id), "role": role, "jti": jti}
     except jwt.ExpiredSignatureError:

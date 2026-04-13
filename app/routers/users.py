@@ -4,12 +4,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from fastapi.security import OAuth2PasswordRequestForm
 from app.models.users import User as UserModel
-from app.schemas import UserCreate, User as UserSchema
+from app.schemas import UserCreate, User as UserSchema, RefreshTokenRequest
 from app.db_depends import get_db
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token
 from app.core.redis import redis_client
 from app.core.config import settings
-
+from app.core.security import oauth2_scheme
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -42,10 +43,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(),
     if not user or not verify_password(form_data.password, user.password):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-
     access_token = create_access_token(user.id, user.role)
     refresh_token = create_refresh_token(user.id, user.role)
-
 
     refresh_payload = jwt.decode(refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     ttl = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
@@ -58,9 +57,91 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(),
     }
 
 
+@router.post("/logout", status_code=200)
+def logout(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=400, detail="Invalid token type")
+
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+
+        if not jti or not exp:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        ttl = max(0, int(exp) - int(datetime.now(timezone.utc).timestamp()))
+
+        if ttl > 0:
+            redis_client.setex(f"blacklist:{jti}", ttl, "1")
+
+        return {"msg": "Logged out"}
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
 @router.get("/", response_model=list[UserSchema])
 def get_all_users(
-    db: Session = Depends(get_db),
+        db: Session = Depends(get_db),
 ):
     users = db.query(UserModel).all()
     return users
+
+
+@router.post('/refresh-token')
+def refresh_token(body: RefreshTokenRequest, db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate refresh token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    old_refresh_token = body.refresh_token
+
+    try:
+        payload = jwt.decode(old_refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = payload.get("sub")
+        token_type = payload.get("type")
+        jti = payload.get("jti")
+
+        if not user_id or token_type != "refresh" or not jti:
+            raise credentials_exception
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Refresh token expired")
+
+    except jwt.PyJWTError:
+        raise credentials_exception
+
+    if not redis_client.exists(f"refresh:{jti}"):
+        raise HTTPException(401, "Refresh token revoked")
+
+    user = db.get(UserModel, int(user_id))
+    if user is None:
+        raise credentials_exception
+
+    new_access_token = create_access_token(user.id, user.role)
+    new_refresh_token = create_refresh_token(user.id, user.role)
+
+    redis_client.delete(f"refresh:{jti}")
+
+    new_payload = jwt.decode(new_refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    new_jti = new_payload["jti"]
+    new_exp = new_payload["exp"]
+    ttl = max(0, new_exp - int(datetime.now(timezone.utc).timestamp()))
+    redis_client.setex(f"refresh:{new_jti}", ttl, str(user.id))
+
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer"
+    }
