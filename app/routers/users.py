@@ -1,22 +1,31 @@
+from datetime import datetime, timezone
+
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import select
 from fastapi.security import OAuth2PasswordRequestForm
-from app.models.users import User as UserModel
-from app.schemas import UserCreate, User as UserSchema, RefreshTokenRequest
-from app.db_depends import get_db
-from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token
-from app.core.redis import redis_client
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from app.core.config import settings
-from app.core.security import oauth2_scheme
-from datetime import datetime, timezone
+from app.core.redis import redis_client
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    hash_password,
+    oauth2_scheme,
+    verify_password,
+)
+from app.db_depends import get_db
+from app.models.users import User as UserModel
+from app.schemas import RefreshTokenRequest, User as UserSchema, UserCreate
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
 @router.post('/', response_model=UserSchema, status_code=status.HTTP_201_CREATED)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    """Создание пользователя"""
+
     result = db.scalars(select(UserModel).where(UserModel.email == user.email))
     if result.first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Email already registered')
@@ -33,15 +42,15 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/token")
-def login(form_data: OAuth2PasswordRequestForm = Depends(),
-          db: Session = Depends(get_db)):
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    """Аутентификация и выдача токенов"""
     result = db.scalars(
         select(UserModel).where(
             UserModel.email == form_data.username)
     )
     user = result.first()
     if not user or not verify_password(form_data.password, user.password):
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
 
     access_token = create_access_token(user.id, user.role)
     refresh_token = create_refresh_token(user.id, user.role)
@@ -57,8 +66,10 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(),
     }
 
 
-@router.post("/logout", status_code=200)
+@router.post("/logout", status_code=status.HTTP_200_OK)
 def logout(token: str = Depends(oauth2_scheme)):
+    """Завершение сессии и добавление refresh-токена в blacklist"""
+
     try:
         payload = jwt.decode(
             token,
@@ -89,16 +100,10 @@ def logout(token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-@router.get("/", response_model=list[UserSchema])
-def get_all_users(
-        db: Session = Depends(get_db),
-):
-    users = db.query(UserModel).all()
-    return users
-
-
 @router.post('/refresh-token')
 def refresh_token(body: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """Обновление пары токенов с ротацией refresh-токена"""
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate refresh token",
@@ -117,13 +122,13 @@ def refresh_token(body: RefreshTokenRequest, db: Session = Depends(get_db)):
             raise credentials_exception
 
     except jwt.ExpiredSignatureError:
-        raise HTTPException(401, "Refresh token expired")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
 
     except jwt.PyJWTError:
         raise credentials_exception
 
     if not redis_client.exists(f"refresh:{jti}"):
-        raise HTTPException(401, "Refresh token revoked")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked")
 
     user = db.get(UserModel, int(user_id))
     if user is None:
